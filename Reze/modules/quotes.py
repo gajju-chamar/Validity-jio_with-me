@@ -1,5 +1,5 @@
 """
-/quote (reply to any text message) renders a Quotly-style card - circular
+/q (reply to any text message) renders a Quotly-style card - circular
 avatar, name, wrapped message bubble - and sends it as a sticker. The
 render pipeline here was prototyped and visually verified before being
 wired into a command (avatar circle mask, bubble, text wrap all confirmed
@@ -88,7 +88,7 @@ def render_quote(avatar_img: Image.Image, name: str, message: str, user_id: int)
 
     canvas = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(canvas)
-    draw.rounded_rectangle([0, 0, W - 1, H - 1], radius=34, fill=(24, 24, 32, 235))
+    draw.rounded_rectangle([0, 0, W - 1, H - 1], radius=34, fill=(26, 20, 41, 255))
 
     av = _circle_avatar(avatar_img, avatar_size)
     canvas.paste(av, (pad, pad), av)
@@ -114,11 +114,11 @@ def render_quote(avatar_img: Image.Image, name: str, message: str, user_id: int)
     return buf.getvalue()
 
 
-@Client.on_message(filters.command("quote"))
+@Client.on_message(filters.command("q"))
 async def quote_cmd(client, message):
     target = message.reply_to_message
     if not target or not (target.text or target.caption):
-        await message.reply_text("Reply to a text message with `/quote` to turn it into a quote sticker.")
+        await message.reply_text("Reply to a text message with `/q` to turn it into a quote sticker.")
         return
     user = target.from_user
     if user is None:
@@ -128,16 +128,20 @@ async def quote_cmd(client, message):
     status = await message.reply_text("Framing that up... 🔥")
 
     avatar_img = None
-    if user.photo:
-        try:
+    try:
+        # user.photo off the message-embedded User object is almost always
+        # None - Telegram doesn't attach it to message updates. Need to
+        # hydrate the full user to get a downloadable photo file_id.
+        full_user = await client.get_users(user.id)
+        if full_user and full_user.photo:
             with tempfile.TemporaryDirectory() as tmp:
-                path = await client.download_media(user.photo.small_file_id, file_name=os.path.join(tmp, "avatar"))
+                path = await client.download_media(full_user.photo.small_file_id, file_name=os.path.join(tmp, "avatar"))
                 if path:
                     loaded = Image.open(path).convert("RGBA")
                     loaded.load()
                     avatar_img = loaded
-        except Exception:
-            avatar_img = None
+    except Exception:
+        avatar_img = None
     if avatar_img is None:
         avatar_img = _fallback_avatar(user)
 
