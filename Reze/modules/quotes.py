@@ -1,14 +1,23 @@
 """
 /q - Create a Telegram-style quote sticker from a replied message.
 
+Layout:
+
+    [avatar]   ┌──────────────────────────────┐
+               │ Username                     │
+               │ Message with emoji/text      │
+               └──────────────────────────────┘
+
+The avatar is completely outside the message bubble.
+
 Design:
-- Background: RGB(25, 20, 41)
-- Avatar outside the comment card
-- User-specific name colour
-- Comment-style card, not a speech bubble
-- Unicode-friendly text rendering
-- Color emoji support
-- Preserves common Telegram text formatting where possible
+- Overall background: RGB(25, 20, 41)
+- Dark Telegram-style message bubble
+- User-specific username colour
+- Avatar outside the bubble
+- Emoji rendered using Noto Color Emoji
+- Bold / italic Telegram entities preserved where possible
+- Unicode mathematical/stylized characters supported through Noto fonts
 """
 
 import asyncio
@@ -16,10 +25,13 @@ import io
 import os
 import tempfile
 
+import emoji
+
 from PIL import Image, ImageDraw, ImageFont
 
 from pyrogram import Client, filters
 from pyrogram.errors import RPCError
+from pyrogram.enums import MessageEntityType
 
 
 # ============================================================================
@@ -38,6 +50,23 @@ FONT_BOLD_CANDIDATES = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
 ]
 
+FONT_ITALIC_CANDIDATES = [
+    "/usr/share/fonts/truetype/noto/NotoSans-Italic.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSans-Italic.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf",
+]
+
+FONT_BOLD_ITALIC_CANDIDATES = [
+    "/usr/share/fonts/truetype/noto/NotoSans-BoldItalic.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSans-BoldItalic.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-BoldOblique.ttf",
+]
+
+FONT_MATH_CANDIDATES = [
+    "/usr/share/fonts/truetype/noto/NotoSansMath-Regular.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSansMath-Regular.ttf",
+]
+
 FONT_EMOJI_CANDIDATES = [
     "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
 ]
@@ -52,12 +81,18 @@ def _find_font(candidates):
 
 FONT_REGULAR = _find_font(FONT_REGULAR_CANDIDATES)
 FONT_BOLD = _find_font(FONT_BOLD_CANDIDATES)
+FONT_ITALIC = _find_font(FONT_ITALIC_CANDIDATES)
+FONT_BOLD_ITALIC = _find_font(FONT_BOLD_ITALIC_CANDIDATES)
+FONT_MATH = _find_font(FONT_MATH_CANDIDATES)
 FONT_EMOJI = _find_font(FONT_EMOJI_CANDIDATES)
 
 
 def _load_font(path, size):
     if not path:
-        raise RuntimeError("Required font is not installed.")
+        raise RuntimeError(
+            "Required quote font is missing from the Docker image."
+        )
+
     return ImageFont.truetype(path, size)
 
 
@@ -67,35 +102,36 @@ def _load_font(path, size):
 
 BACKGROUND = (25, 20, 41, 255)
 
-# Dark comment-card colour.
-CARD_BACKGROUND = (32, 27, 50, 255)
+# Telegram-ish dark bubble.
+BUBBLE_BACKGROUND = (38, 32, 58, 255)
 
-TEXT_COLOR = (240, 238, 245, 255)
-SECONDARY_COLOR = (165, 160, 180, 255)
+TEXT_COLOR = (242, 240, 246, 255)
 
 MAX_QUOTE_CHARS = 320
 
 CANVAS_WIDTH = 512
 
-AVATAR_SIZE = 72
-AVATAR_X = 20
+# Avatar sits outside the bubble.
+AVATAR_SIZE = 68
+AVATAR_X = 18
 AVATAR_Y = 24
 
-CARD_X = 106
-CARD_Y = 24
-CARD_RIGHT = 492
+# Message bubble.
+BUBBLE_X = 78
+BUBBLE_RIGHT = 494
+BUBBLE_Y = 20
 
-CARD_RADIUS = 20
+BUBBLE_RADIUS = 17
 
-CARD_PADDING_X = 18
-CARD_PADDING_TOP = 14
-CARD_PADDING_BOTTOM = 17
+BUBBLE_PADDING_X = 16
+BUBBLE_PADDING_TOP = 12
+BUBBLE_PADDING_BOTTOM = 14
 
-NAME_SIZE = 23
-MESSAGE_SIZE = 27
+NAME_SIZE = 22
+MESSAGE_SIZE = 26
 
-LINE_SPACING = 7
-NAME_MESSAGE_GAP = 5
+NAME_MESSAGE_GAP = 4
+LINE_SPACING = 5
 
 
 # ============================================================================
@@ -220,65 +256,229 @@ def _circle_avatar(image, size):
 
 
 # ============================================================================
-# THINKING / COMMENT INDICATOR
+# FONT SELECTION
 # ============================================================================
 
-def _draw_comment_indicator(
-    canvas,
-    avatar_x,
-    avatar_y,
+def _font_for_style(size, bold=False, italic=False):
+    if bold and italic:
+        path = FONT_BOLD_ITALIC or FONT_BOLD or FONT_REGULAR
+
+    elif bold:
+        path = FONT_BOLD or FONT_REGULAR
+
+    elif italic:
+        path = FONT_ITALIC or FONT_REGULAR
+
+    else:
+        path = FONT_REGULAR
+
+    return _load_font(path, size)
+
+
+def _looks_like_math_unicode(char):
+    code = ord(char)
+
+    return (
+        0x1D400 <= code <= 0x1D7FF
+        or 0x2100 <= code <= 0x214F
+        or 0x2200 <= code <= 22FF
+    )
+
+
+def _font_for_character(
+    char,
+    size,
+    bold=False,
+    italic=False,
 ):
     """
-    Small comment-style indicator attached visually to the avatar.
+    Use Noto Sans Math for mathematical/stylized Unicode characters.
+    Otherwise use the requested normal/bold/italic font.
     """
 
-    draw = ImageDraw.Draw(canvas)
+    if _looks_like_math_unicode(char) and FONT_MATH:
+        try:
+            return _load_font(
+                FONT_MATH,
+                size,
+            )
+        except Exception:
+            pass
 
-    x = avatar_x + 45
-    y = avatar_y + 48
-
-    # Outer little comment bubble
-    draw.rounded_rectangle(
-        (
-            x,
-            y,
-            x + 42,
-            y + 27,
-        ),
-        radius=13,
-        fill=(45, 39, 63, 255),
+    return _font_for_style(
+        size,
+        bold=bold,
+        italic=italic,
     )
 
-    # Tiny tail
-    draw.polygon(
-        (
-            (x + 8, y + 22),
-            (x + 4, y + 31),
-            (x + 16, y + 23),
-        ),
-        fill=(45, 39, 63, 255),
+
+# ============================================================================
+# ENTITY HANDLING
+# ============================================================================
+
+def _entity_ranges(message):
+    """
+    Convert Telegram entities into character ranges.
+
+    Pyrogram exposes entity offsets/lengths in Telegram's UTF-16 based
+    representation. Python strings use Unicode code points, so we map
+    UTF-16 offsets back to Python indices.
+    """
+
+    text = message.text or message.caption or ""
+
+    if not text:
+        return []
+
+    entities = (
+        message.entities
+        or message.caption_entities
+        or []
     )
 
-    # Three dots
-    for i in range(3):
-        dot_x = x + 11 + i * 10
+    result = []
 
-        draw.ellipse(
-            (
-                dot_x - 2,
-                y + 11 - 2,
-                dot_x + 2,
-                y + 11 + 2,
-            ),
-            fill=(180, 174, 195, 255),
+    for entity in entities:
+
+        entity_type = getattr(
+            entity,
+            "type",
+            None,
         )
 
+        offset = getattr(
+            entity,
+            "offset",
+            0,
+        )
+
+        length = getattr(
+            entity,
+            "length",
+            0,
+        )
+
+        if not length:
+            continue
+
+        utf16 = 0
+        start = None
+        end = None
+
+        for index, char in enumerate(text):
+
+            char_units = len(
+                char.encode(
+                    "utf-16-le"
+                )
+            ) // 2
+
+            if utf16 == offset:
+                start = index
+
+            utf16 += char_units
+
+            if utf16 == offset + length:
+                end = index + 1
+                break
+
+        if start is None:
+            start = 0
+
+        if end is None:
+            end = len(text)
+
+        result.append(
+            (
+                start,
+                end,
+                str(entity_type).lower(),
+            )
+        )
+
+    return result
+
+
+def _style_for_position(
+    index,
+    entity_ranges,
+):
+    bold = False
+    italic = False
+
+    for start, end, entity_type in entity_ranges:
+
+        if not (
+            start <= index < end
+        ):
+            continue
+
+        if "bold" in entity_type:
+            bold = True
+
+        if "italic" in entity_type:
+            italic = True
+
+    return bold, italic
+
 
 # ============================================================================
-# TEXT HELPERS
+# EMOJI HELPERS
 # ============================================================================
 
-def _text_width(draw, text, font):
+def _emoji_spans(text):
+    """
+    Returns emoji spans so ZWJ emoji such as:
+        👨‍💻
+        ❤️
+        👩🏽‍💻
+
+    are treated as one visual unit instead of being split character by
+    character.
+    """
+
+    spans = []
+
+    try:
+        for item in emoji.emoji_list(text):
+
+            start = item["match_start"]
+            end = item["match_end"]
+
+            spans.append(
+                (
+                    start,
+                    end,
+                    item["emoji"],
+                )
+            )
+
+    except Exception:
+        pass
+
+    return spans
+
+
+# ============================================================================
+# TEXT MEASUREMENT
+# ============================================================================
+
+def _segment_width(
+    draw,
+    text,
+    size,
+    bold=False,
+    italic=False,
+):
+    if not text:
+        return 0
+
+    font = _font_for_style(
+        size,
+        bold=bold,
+        italic=italic,
+    )
+
     return draw.textlength(
         text,
         font=font,
@@ -288,215 +488,239 @@ def _text_width(draw, text, font):
 def _wrap_text(
     draw,
     text,
-    font,
     max_width,
+    size,
+    entity_ranges,
 ):
     """
-    Wrap text while keeping words intact where possible.
+    Word wrapping that takes emoji and Telegram formatting into account.
+
+    We keep words intact where possible.
     """
+
+    words = text.split(" ")
 
     lines = []
 
-    paragraphs = text.split("\n")
+    current = ""
+    current_start = 0
 
-    for paragraph in paragraphs:
+    cursor = 0
 
-        paragraph = paragraph.strip()
+    for word_index, word in enumerate(words):
 
-        if not paragraph:
-            lines.append("")
-            continue
+        if word_index > 0:
+            cursor += 1
 
-        current = ""
+        word_start = cursor
+        word_end = word_start + len(word)
 
-        for word in paragraph.split():
+        candidate = (
+            word
+            if not current
+            else f"{current} {word}"
+        )
 
-            candidate = (
-                f"{current} {word}"
-                if current
-                else word
+        # Approximate width using the actual style of the first
+        # character in the candidate.
+        test_width = 0
+
+        for local_index, char in enumerate(candidate):
+
+            absolute_index = (
+                current_start
+                + local_index
             )
 
-            if _text_width(
-                draw,
-                candidate,
-                font,
-            ) <= max_width:
+            bold, italic = _style_for_position(
+                absolute_index,
+                entity_ranges,
+            )
 
-                current = candidate
-                continue
+            emoji_spans = _emoji_spans(char)
 
-            if current:
-                lines.append(current)
+            if emoji_spans and FONT_EMOJI:
 
-            # Extremely long word.
-            if _text_width(
-                draw,
-                word,
-                font,
-            ) > max_width:
+                emoji_font = _load_font(
+                    FONT_EMOJI,
+                    size,
+                )
 
-                chunk = ""
+                try:
+                    bbox = draw.textbbox(
+                        (0, 0),
+                        char,
+                        font=emoji_font,
+                    )
 
-                for char in word:
+                    width = bbox[2] - bbox[0]
 
-                    candidate_char = chunk + char
+                    if width <= 0:
+                        width = size
 
-                    if _text_width(
-                        draw,
-                        candidate_char,
-                        font,
-                    ) <= max_width:
+                    test_width += width
+                    continue
 
-                        chunk = candidate_char
+                except Exception:
+                    pass
 
-                    else:
+            font = _font_for_character(
+                char,
+                size,
+                bold=bold,
+                italic=italic,
+            )
 
-                        if chunk:
-                            lines.append(chunk)
+            test_width += draw.textlength(
+                char,
+                font=font,
+            )
 
-                        chunk = char
+        if (
+            current
+            and test_width > max_width
+        ):
 
-                current = chunk
+            lines.append(
+                (
+                    current,
+                    current_start,
+                )
+            )
 
-            else:
-                current = word
+            current = word
+            current_start = word_start
 
-        if current:
-            lines.append(current)
+        else:
 
-    return lines or ["…"]
+            current = candidate
 
+        cursor = word_end
 
-# ============================================================================
-# EMOJI DETECTION
-# ============================================================================
+    if current:
+        lines.append(
+            (
+                current,
+                current_start,
+            )
+        )
 
-def _is_emoji_char(char):
-    """
-    Basic emoji range detection.
-
-    This isn't intended to classify every Unicode character perfectly.
-    It catches the emoji ranges most commonly used in Telegram messages.
-    """
-
-    code = ord(char)
-
-    return (
-        0x1F000 <= code <= 0x1FAFF
-        or 0x2600 <= code <= 0x27BF
-        or 0x2300 <= code <= 0x23FF
-        or 0x2B00 <= code <= 0x2BFF
-    )
-
-
-def _contains_emoji(text):
-    return any(
-        _is_emoji_char(char)
-        for char in text
-    )
+    return lines or [("…", 0)]
 
 
 # ============================================================================
-# MIXED TEXT RENDERER
+# MIXED TEXT RENDERING
 # ============================================================================
 
-def _draw_mixed_text(
+def _draw_text_line(
     draw,
-    position,
+    x,
+    y,
     text,
-    regular_font,
-    emoji_font,
-    fill,
+    absolute_start,
+    size,
+    color,
+    entity_ranges,
 ):
     """
-    Draw normal Unicode text with Noto Sans and emoji using
-    Noto Color Emoji.
-
-    This prevents emoji from becoming empty squares.
+    Render a line character-by-character so normal text, bold, italic,
+    Unicode mathematical characters and emoji can coexist.
     """
 
-    x, y = position
+    emoji_spans = _emoji_spans(text)
 
-    if not emoji_font:
-        draw.text(
-            (x, y),
-            text,
-            font=regular_font,
-            fill=fill,
-        )
-        return
+    emoji_lookup = {}
 
-    current = ""
-
-    def flush_text():
-        nonlocal current, x
-
-        if not current:
-            return
-
-        draw.text(
-            (x, y),
-            current,
-            font=regular_font,
-            fill=fill,
+    for start, end, value in emoji_spans:
+        emoji_lookup[start] = (
+            end,
+            value,
         )
 
-        x += draw.textlength(
-            current,
-            font=regular_font,
-        )
+    index = 0
 
-        current = ""
+    while index < len(text):
 
-    for char in text:
+        # --------------------------------------------------------------
+        # Emoji
+        # --------------------------------------------------------------
 
-        if _is_emoji_char(char):
+        if index in emoji_lookup and FONT_EMOJI:
 
-            flush_text()
+            end, emoji_value = emoji_lookup[index]
 
             try:
+                emoji_font = _load_font(
+                    FONT_EMOJI,
+                    size,
+                )
+
                 draw.text(
-                    (x, y - 2),
-                    char,
+                    (
+                        x,
+                        y - 3,
+                    ),
+                    emoji_value,
                     font=emoji_font,
                     embedded_color=True,
                 )
 
                 bbox = draw.textbbox(
-                    (x, y - 2),
-                    char,
+                    (
+                        x,
+                        y - 3,
+                    ),
+                    emoji_value,
                     font=emoji_font,
                 )
 
-                emoji_width = bbox[2] - bbox[0]
+                width = bbox[2] - bbox[0]
 
-                if emoji_width <= 0:
-                    emoji_width = 30
+                if width <= 0:
+                    width = size
 
-                x += emoji_width
+                x += width
+
+                index = end
+                continue
 
             except Exception:
-                # If Pillow cannot render a specific emoji,
-                # fall back gracefully rather than crashing.
-                fallback = "□"
+                pass
 
-                draw.text(
-                    (x, y),
-                    fallback,
-                    font=regular_font,
-                    fill=fill,
-                )
+        # --------------------------------------------------------------
+        # Normal / bold / italic / math character
+        # --------------------------------------------------------------
 
-                x += draw.textlength(
-                    fallback,
-                    font=regular_font,
-                )
+        char = text[index]
 
-        else:
-            current += char
+        bold, italic = _style_for_position(
+            absolute_start + index,
+            entity_ranges,
+        )
 
-    flush_text()
+        font = _font_for_character(
+            char,
+            size,
+            bold=bold,
+            italic=italic,
+        )
+
+        draw.text(
+            (
+                x,
+                y,
+            ),
+            char,
+            font=font,
+            fill=color,
+        )
+
+        x += draw.textlength(
+            char,
+            font=font,
+        )
+
+        index += 1
 
 
 # ============================================================================
@@ -508,8 +732,11 @@ def render_quote(
     name,
     message,
     user_id,
+    entity_ranges=None,
 ):
     accent = _accent_for(user_id)
+
+    entity_ranges = entity_ranges or []
 
     name_font = _load_font(
         FONT_BOLD,
@@ -521,18 +748,6 @@ def render_quote(
         MESSAGE_SIZE,
     )
 
-    emoji_font = None
-
-    if FONT_EMOJI:
-        try:
-            emoji_font = ImageFont.truetype(
-                FONT_EMOJI,
-                MESSAGE_SIZE,
-            )
-        except Exception:
-            emoji_font = None
-
-    # Temporary measurement surface.
     temp = Image.new(
         "RGBA",
         (10, 10),
@@ -540,18 +755,26 @@ def render_quote(
 
     measure = ImageDraw.Draw(temp)
 
-    # Text area inside the comment card.
-    text_width = (
-        CARD_RIGHT
-        - CARD_X
-        - CARD_PADDING_X * 2
+    # --------------------------------------------------------------
+    # Bubble dimensions
+    # --------------------------------------------------------------
+
+    bubble_width = (
+        BUBBLE_RIGHT
+        - BUBBLE_X
     )
 
-    lines = _wrap_text(
+    text_width = (
+        bubble_width
+        - BUBBLE_PADDING_X * 2
+    )
+
+    wrapped_lines = _wrap_text(
         measure,
         message.strip() or "…",
-        message_font,
         text_width,
+        MESSAGE_SIZE,
+        entity_ranges,
     )
 
     name_bbox = measure.textbbox(
@@ -565,47 +788,43 @@ def render_quote(
         - name_bbox[1]
     )
 
-    msg_bbox = measure.textbbox(
+    message_bbox = measure.textbbox(
         (0, 0),
         "Ag",
         font=message_font,
     )
 
     line_height = (
-        msg_bbox[3]
-        - msg_bbox[1]
+        message_bbox[3]
+        - message_bbox[1]
         + LINE_SPACING
     )
 
     message_height = (
-        len(lines)
+        len(wrapped_lines)
         * line_height
     )
 
-    card_height = (
-        CARD_PADDING_TOP
+    bubble_height = (
+        BUBBLE_PADDING_TOP
         + name_height
         + NAME_MESSAGE_GAP
         + message_height
-        + CARD_PADDING_BOTTOM
+        + BUBBLE_PADDING_BOTTOM
     )
 
-    card_height = max(
-        card_height,
+    bubble_height = max(
+        bubble_height,
         AVATAR_SIZE,
     )
 
-    card_height = min(
-        card_height,
-        760,
-    )
+    # --------------------------------------------------------------
+    # Canvas
+    # --------------------------------------------------------------
 
-    canvas_height = (
-        max(
-            card_height,
-            AVATAR_SIZE,
-        )
-        + 48
+    canvas_height = max(
+        bubble_height + 40,
+        AVATAR_SIZE + 48,
     )
 
     canvas = Image.new(
@@ -619,70 +838,71 @@ def render_quote(
 
     draw = ImageDraw.Draw(canvas)
 
-    # ------------------------------------------------------------------
-    # Avatar
-    # ------------------------------------------------------------------
+    # --------------------------------------------------------------
+    # Message bubble
+    # --------------------------------------------------------------
+
+    draw.rounded_rectangle(
+        (
+            BUBBLE_X,
+            BUBBLE_Y,
+            BUBBLE_RIGHT,
+            BUBBLE_Y + bubble_height,
+        ),
+        radius=BUBBLE_RADIUS,
+        fill=BUBBLE_BACKGROUND,
+    )
+
+    # --------------------------------------------------------------
+    # Avatar OUTSIDE bubble
+    # --------------------------------------------------------------
 
     avatar = _circle_avatar(
         avatar_img,
         AVATAR_SIZE,
     )
 
+    avatar_y = (
+        BUBBLE_Y
+        + max(
+            0,
+            (bubble_height - AVATAR_SIZE) // 2,
+        )
+    )
+
     canvas.paste(
         avatar,
         (
             AVATAR_X,
-            AVATAR_Y,
+            avatar_y,
         ),
         avatar,
     )
 
-    # User's accent ring.
+    # Very subtle user-coloured outline.
     draw.ellipse(
         (
             AVATAR_X,
-            AVATAR_Y,
+            avatar_y,
             AVATAR_X + AVATAR_SIZE - 1,
-            AVATAR_Y + AVATAR_SIZE - 1,
+            avatar_y + AVATAR_SIZE - 1,
         ),
-        outline=accent + (255,),
+        outline=accent + (210,),
         width=2,
     )
 
-    # Comment/thinking indicator.
-    _draw_comment_indicator(
-        canvas,
-        AVATAR_X,
-        AVATAR_Y,
-    )
-
-    # ------------------------------------------------------------------
-    # Comment card
-    # ------------------------------------------------------------------
-
-    draw.rounded_rectangle(
-        (
-            CARD_X,
-            CARD_Y,
-            CARD_RIGHT,
-            CARD_Y + card_height,
-        ),
-        radius=CARD_RADIUS,
-        fill=CARD_BACKGROUND,
-    )
-
-    # ------------------------------------------------------------------
+    # --------------------------------------------------------------
     # Username
-    # ------------------------------------------------------------------
+    # --------------------------------------------------------------
 
     text_x = (
-        CARD_X
-        + CARD_PADDING_X
+        BUBBLE_X
+        + BUBBLE_PADDING_X
     )
 
     name_y = (
-        CARD_Y
-        + CARD_PADDING_TOP
+        BUBBLE_Y
+        + BUBBLE_PADDING_TOP
     )
 
     draw.text(
@@ -695,9 +915,9 @@ def render_quote(
         fill=accent + (255,),
     )
 
-    # ------------------------------------------------------------------
+    # --------------------------------------------------------------
     # Message
-    # ------------------------------------------------------------------
+    # --------------------------------------------------------------
 
     message_y = (
         name_y
@@ -705,65 +925,46 @@ def render_quote(
         + NAME_MESSAGE_GAP
     )
 
-    for line in lines:
+    for line, absolute_start in wrapped_lines:
 
-        _draw_mixed_text(
+        _draw_text_line(
             draw,
-            (
-                text_x,
-                message_y,
-            ),
+            text_x,
+            message_y,
             line,
-            message_font,
-            emoji_font,
+            absolute_start,
+            MESSAGE_SIZE,
             TEXT_COLOR,
+            entity_ranges,
         )
 
         message_y += line_height
 
-    # ------------------------------------------------------------------
-    # Resize to Telegram sticker dimensions
-    # ------------------------------------------------------------------
+    # --------------------------------------------------------------
+    # Telegram sticker size
+    # --------------------------------------------------------------
 
     width, height = canvas.size
 
-    if width >= height:
-
-        new_width = 512
-
-        new_height = max(
-            1,
-            round(
-                height
-                * 512
-                / width,
-            ),
-        )
-
-    else:
-
-        new_height = 512
-
-        new_width = max(
-            1,
-            round(
-                width
-                * 512
-                / height,
-            ),
-        )
-
-    canvas = canvas.resize(
-        (
-            new_width,
-            new_height,
-        ),
-        Image.LANCZOS,
+    scale = min(
+        512 / width,
+        512 / height,
+        1,
     )
 
-    # ------------------------------------------------------------------
+    if scale != 1:
+
+        canvas = canvas.resize(
+            (
+                max(1, round(width * scale)),
+                max(1, round(height * scale)),
+            ),
+            Image.LANCZOS,
+        )
+
+    # --------------------------------------------------------------
     # WEBP
-    # ------------------------------------------------------------------
+    # --------------------------------------------------------------
 
     buffer = io.BytesIO()
 
@@ -778,7 +979,7 @@ def render_quote(
 
 
 # ============================================================================
-# /q
+# /q COMMAND
 # ============================================================================
 
 @Client.on_message(
@@ -788,44 +989,38 @@ async def quote_cmd(
     client,
     message,
 ):
-
     target = message.reply_to_message
 
     if not target or not (
         target.text
         or target.caption
     ):
-
         await message.reply_text(
             "Reply to a text message with `/q` "
             "to turn it into a quote sticker."
         )
-
         return
 
     user = target.from_user
 
     if user is None:
-
         await message.reply_text(
             "Can't quote that one — no sender info "
             "(anonymous admin or channel post)."
         )
-
         return
 
     status = await message.reply_text(
         "Framing that up... 🔥"
     )
 
-    # ------------------------------------------------------------------
-    # Avatar
-    # ------------------------------------------------------------------
+    # --------------------------------------------------------------
+    # Fetch avatar
+    # --------------------------------------------------------------
 
     avatar_img = None
 
     try:
-
         full_user = await client.get_users(
             user.id
         )
@@ -859,9 +1054,9 @@ async def quote_cmd(
     if avatar_img is None:
         avatar_img = _fallback_avatar(user)
 
-    # ------------------------------------------------------------------
-    # Message
-    # ------------------------------------------------------------------
+    # --------------------------------------------------------------
+    # Text
+    # --------------------------------------------------------------
 
     text = (
         target.text
@@ -877,9 +1072,17 @@ async def quote_cmd(
         or "Someone"
     )
 
-    # ------------------------------------------------------------------
+    # --------------------------------------------------------------
+    # Telegram formatting entities
+    # --------------------------------------------------------------
+
+    entity_ranges = _entity_ranges(
+        target
+    )
+
+    # --------------------------------------------------------------
     # Render
-    # ------------------------------------------------------------------
+    # --------------------------------------------------------------
 
     try:
 
@@ -889,6 +1092,7 @@ async def quote_cmd(
             name,
             text,
             user.id,
+            entity_ranges,
         )
 
     except Exception as exc:
@@ -900,9 +1104,9 @@ async def quote_cmd(
 
         return
 
-    # ------------------------------------------------------------------
-    # Send
-    # ------------------------------------------------------------------
+    # --------------------------------------------------------------
+    # Send sticker
+    # --------------------------------------------------------------
 
     webp_path = None
 
@@ -937,7 +1141,6 @@ async def quote_cmd(
             webp_path
             and os.path.exists(webp_path)
         ):
-
             try:
                 os.unlink(webp_path)
             except OSError:
