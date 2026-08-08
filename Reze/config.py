@@ -52,6 +52,9 @@ class Config:
     # (see database/auth_db.py + modules/auth.py) to be authorized.
     APPROVED_GROUPS = set(_list_env("APPROVED_GROUPS"))
     ALLOWED_DM_USERS = set(_list_env("ALLOWED_DM_USERS"))
+    # Global allowlist:
+    # Only these users can actually use Reze anywhere.
+    ALLOWED_USERS = set(_list_env("ALLOWED_USERS"))
 
     # -- Database --
     MONGO_URI = os.environ.get("MONGO_URI")
