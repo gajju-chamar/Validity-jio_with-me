@@ -88,7 +88,10 @@ def render_quote(avatar_img: Image.Image, name: str, message: str, user_id: int)
 
     canvas = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(canvas)
-    draw.rounded_rectangle([0, 0, W - 1, H - 1], radius=34, fill=(26, 20, 41, 255))
+    draw.rounded_rectangle(
+        [0, 0, W - 1, H - 1], radius=34, fill=(26, 20, 41, 255),
+        corners=(False, True, True, True),
+    )
 
     av = _circle_avatar(avatar_img, avatar_size)
     canvas.paste(av, (pad, pad), av)
@@ -135,7 +138,7 @@ async def quote_cmd(client, message):
         full_user = await client.get_users(user.id)
         if full_user and full_user.photo:
             with tempfile.TemporaryDirectory() as tmp:
-                path = await client.download_media(full_user.photo.small_file_id, file_name=os.path.join(tmp, "avatar"))
+                path = await client.download_media(full_user.photo.big_file_id, file_name=os.path.join(tmp, "avatar"))
                 if path:
                     loaded = Image.open(path).convert("RGBA")
                     loaded.load()
