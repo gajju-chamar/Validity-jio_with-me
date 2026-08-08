@@ -9,11 +9,12 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# System deps:
-#  - build-essential: compiles TgCrypto (speed boost for MTProto)
-#  - libjpeg/zlib/libwebp: Pillow image + WEBP sticker support
-#  - ffmpeg: video/gif -> VP9 webm video sticker encoding, downloader module
-#  - fonts: quote-card + sticker text rendering with broad unicode/emoji coverage
+# System dependencies:
+# - build-essential: compiles TgCrypto
+# - libjpeg/zlib/libwebp: Pillow image + WEBP sticker support
+# - ffmpeg: video/gif -> VP9 webm video sticker encoding, downloader module
+# - fonts: quote-card + sticker text rendering with broad Unicode/emoji coverage
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libjpeg62-turbo-dev \
@@ -21,17 +22,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libwebp-dev \
     ffmpeg \
     fonts-dejavu-core \
+    fonts-noto-core \
     fonts-noto-color-emoji \
     git \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
+
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Railway injects $PORT for web services; Reze is a polling bot (no web server),
-# so no EXPOSE/health endpoint is required. See Reze/__main__.py.
+# Railway injects $PORT for web services.
+# Reze is a polling bot, so no EXPOSE/health endpoint is required.
+
 CMD ["python3", "-m", "Reze"]
