@@ -154,7 +154,12 @@ async def quote_cmd(client, message):
         f.write(data)
         webp_path = f.name
     try:
-        await client.send_sticker(message.chat.id, webp_path, reply_to_message_id=target.id)
+        await client.send_sticker(
+            message.chat.id,
+            webp_path,
+            emoji="💬",
+            reply_to_message_id=target.id,
+        )
         await status.delete()
     except RPCError as e:
         await status.edit_text(f"Couldn't send that. (`{e}`)")
