@@ -64,8 +64,11 @@ class Config:
     # -- Optional --
     LOG_GROUP_ID = _int_env("LOG_GROUP_ID")
     OMDB_API_KEY = os.environ.get("OMDB_API_KEY")
-    XAI_API_KEY = os.environ.get("XAI_API_KEY")
-    XAI_MODEL = os.environ.get("XAI_MODEL", "grok-4.5")
+    GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+    GROQ_MODEL = os.environ.get(
+    "GROQ_MODEL",
+    "llama-3.3-70b-versatile"
+)
 
     # -- Bot identity / branding --
     BOT_NAME = "Reze"
