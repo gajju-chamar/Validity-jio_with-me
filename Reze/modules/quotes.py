@@ -11,11 +11,11 @@ Layout:
 The avatar is completely outside the message bubble.
 
 Design:
-- Overall background: RGB(25, 20, 41)
+- Overall background: Transparent
 - Dark Telegram-style message bubble
 - User-specific username colour
 - Avatar outside the bubble
-- Emoji rendered using Noto Color Emoji
+- Emoji rendered using Noto Color Emoji or system defaults
 - Bold / italic Telegram entities preserved where possible
 """
 
@@ -38,30 +38,40 @@ from pyrogram.errors import RPCError
 
 FONT_REGULAR_CANDIDATES = [
     "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
-    "/usr/share/fonts/opentype/noto/NotoSans-Regular.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "C:\\Windows\\Fonts\\arial.ttf",
+    "/System/Library/Fonts/Helvetica.ttc",
+    "arial.ttf",
 ]
 
 FONT_BOLD_CANDIDATES = [
     "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
-    "/usr/share/fonts/opentype/noto/NotoSans-Bold.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "C:\\Windows\\Fonts\\arialbd.ttf",
+    "/System/Library/Fonts/Helvetica.ttc",
+    "arialbd.ttf",
 ]
 
 FONT_ITALIC_CANDIDATES = [
     "/usr/share/fonts/truetype/noto/NotoSans-Italic.ttf",
-    "/usr/share/fonts/opentype/noto/NotoSans-Italic.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf",
+    "C:\\Windows\\Fonts\\ariali.ttf",
+    "/System/Library/Fonts/Helvetica.ttc",
+    "ariali.ttf",
 ]
 
 FONT_BOLD_ITALIC_CANDIDATES = [
     "/usr/share/fonts/truetype/noto/NotoSans-BoldItalic.ttf",
-    "/usr/share/fonts/opentype/noto/NotoSans-BoldItalic.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-BoldOblique.ttf",
+    "C:\\Windows\\Fonts\\arialbi.ttf",
+    "/System/Library/Fonts/Helvetica.ttc",
+    "arialbi.ttf",
 ]
 
 FONT_EMOJI_CANDIDATES = [
     "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+    "C:\\Windows\\Fonts\\seguiemj.ttf",
+    "/System/Library/Fonts/Apple Color Emoji.ttc",
 ]
 
 
@@ -82,7 +92,7 @@ FONT_EMOJI = _find_font(FONT_EMOJI_CANDIDATES)
 def _load_font(path, size):
     if not path:
         raise RuntimeError(
-            "Required quote font is missing from the Docker image."
+            "Required quote font is missing from the system."
         )
 
     return ImageFont.truetype(path, size)
@@ -92,7 +102,8 @@ def _load_font(path, size):
 # DESIGN
 # ============================================================================
 
-BACKGROUND = (25, 20, 41, 255)
+# Fully transparent background to fix the "double rectangle" issue
+BACKGROUND = (0, 0, 0, 0)
 
 # Telegram-style dark message bubble.
 BUBBLE_BACKGROUND = (38, 32, 58, 255)
@@ -105,11 +116,11 @@ CANVAS_WIDTH = 512
 
 # Avatar completely outside the bubble.
 AVATAR_SIZE = 68
-AVATAR_X = 18
+AVATAR_X = 10
 AVATAR_Y = 24
 
-# Message bubble.
-BUBBLE_X = 78
+# Message bubble. Pushed right to clear the avatar.
+BUBBLE_X = 90
 BUBBLE_RIGHT = 494
 BUBBLE_Y = 20
 
