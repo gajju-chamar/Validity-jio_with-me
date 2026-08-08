@@ -12,8 +12,8 @@ WORKDIR /app
 # System dependencies:
 # - build-essential: compiles TgCrypto
 # - libjpeg/zlib/libwebp: Pillow image + WEBP sticker support
-# - ffmpeg: video/gif -> VP9 webm video sticker encoding, downloader module
-# - Noto fonts: Unicode, italic/bold text and emoji rendering
+# - ffmpeg: media processing
+# - Noto/DejaVu fonts: text + Unicode + emoji rendering
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
@@ -23,7 +23,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     fonts-dejavu-core \
     fonts-noto-core \
-    fonts-noto-math \
     fonts-noto-color-emoji \
     git \
     ca-certificates \
@@ -35,8 +34,5 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 COPY . .
-
-# Railway injects $PORT for web services.
-# Reze is a polling bot, so no EXPOSE/health endpoint is required.
 
 CMD ["python3", "-m", "Reze"]
