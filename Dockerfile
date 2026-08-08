@@ -13,7 +13,7 @@ WORKDIR /app
 # - build-essential: compiles TgCrypto
 # - libjpeg/zlib/libwebp: Pillow image + WEBP sticker support
 # - ffmpeg: video/gif -> VP9 webm video sticker encoding, downloader module
-# - fonts: quote-card + sticker text rendering with broad Unicode/emoji coverage
+# - Noto fonts: Unicode, italic/bold text and emoji rendering
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
@@ -23,6 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     fonts-dejavu-core \
     fonts-noto-core \
+    fonts-noto-math \
     fonts-noto-color-emoji \
     git \
     ca-certificates \
