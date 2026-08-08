@@ -23,7 +23,7 @@ MENU_COMMANDS = [
     BotCommand("setwelcome", "Set the welcome message"),
     BotCommand("rules", "Show this group's rules"),
     BotCommand("kang", "Grab media into your sticker pack"),
-    BotCommand("quote", "Turn a message into a quote sticker"),
+    BotCommand("q", "Turn a message into a quote sticker"),
     BotCommand("tr", "Translate text"),
     BotCommand("ai", "Ask Grok a question"),
     BotCommand("id", "Show chat/user IDs"),
