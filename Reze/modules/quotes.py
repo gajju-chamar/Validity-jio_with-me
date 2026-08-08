@@ -2,16 +2,13 @@
 /q - Create a Telegram-style quote sticker from a replied message.
 
 Design:
-- Dark Telegram-like message bubble
-- User-specific accent colour for the name
-- Avatar outside the message bubble
-- Small "thinking" indicator beside the avatar
-- Unicode-friendly fonts for stylized names
-- Automatic text wrapping
-- 512px Telegram sticker-compatible output
-
-The generated sticker is not automatically saved to a user's sticker pack.
-Replying to it with /kang can still save it like any other sticker.
+- Background: RGB(25, 20, 41)
+- Avatar outside the comment card
+- User-specific name colour
+- Comment-style card, not a speech bubble
+- Unicode-friendly text rendering
+- Color emoji support
+- Preserves common Telegram text formatting where possible
 """
 
 import asyncio
@@ -25,104 +22,94 @@ from pyrogram import Client, filters
 from pyrogram.errors import RPCError
 
 
-# ---------------------------------------------------------------------------
-# Fonts
-# ---------------------------------------------------------------------------
+# ============================================================================
+# FONTS
+# ============================================================================
 
-# Noto Sans has much broader Unicode coverage than DejaVu Sans.
-# This matters for names containing stylized Unicode characters such as:
-#
-# 𝑺𝒂𝒏𝒋𝒊
-# 𝘚𝘢𝘯𝘫𝘪
-# 𝗦𝗮𝗻𝗷𝗶
-# 𝓢𝓪𝓷𝓳𝓲
-#
-# We keep DejaVu as a fallback for systems where Noto isn't installed.
+FONT_REGULAR_CANDIDATES = [
+    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSans-Regular.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+]
 
-FONT_CANDIDATES = {
-    "regular": [
-        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
-        "/usr/share/fonts/opentype/noto/NotoSans-Regular.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    ],
-    "bold": [
-        "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
-        "/usr/share/fonts/opentype/noto/NotoSans-Bold.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    ],
-}
+FONT_BOLD_CANDIDATES = [
+    "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSans-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+]
+
+FONT_EMOJI_CANDIDATES = [
+    "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+]
 
 
-def _find_font(kind: str) -> str:
-    """
-    Find the first available font from our candidate list.
-    """
-
-    for path in FONT_CANDIDATES[kind]:
+def _find_font(candidates):
+    for path in candidates:
         if os.path.exists(path):
             return path
-
-    raise FileNotFoundError(
-        f"No usable {kind} font found. "
-        f"Checked: {FONT_CANDIDATES[kind]}"
-    )
+    return None
 
 
-FONT_REG = _find_font("regular")
-FONT_BOLD = _find_font("bold")
+FONT_REGULAR = _find_font(FONT_REGULAR_CANDIDATES)
+FONT_BOLD = _find_font(FONT_BOLD_CANDIDATES)
+FONT_EMOJI = _find_font(FONT_EMOJI_CANDIDATES)
 
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
+def _load_font(path, size):
+    if not path:
+        raise RuntimeError("Required font is not installed.")
+    return ImageFont.truetype(path, size)
+
+
+# ============================================================================
+# DESIGN
+# ============================================================================
+
+BACKGROUND = (25, 20, 41, 255)
+
+# Dark comment-card colour.
+CARD_BACKGROUND = (32, 27, 50, 255)
+
+TEXT_COLOR = (240, 238, 245, 255)
+SECONDARY_COLOR = (165, 160, 180, 255)
 
 MAX_QUOTE_CHARS = 320
 
-CANVAS_W = 512
+CANVAS_WIDTH = 512
 
-# Overall margins
-LEFT_MARGIN = 20
-RIGHT_MARGIN = 20
-TOP_MARGIN = 22
-BOTTOM_MARGIN = 22
+AVATAR_SIZE = 72
+AVATAR_X = 20
+AVATAR_Y = 24
 
-# Avatar
-AVATAR_SIZE = 68
+CARD_X = 106
+CARD_Y = 24
+CARD_RIGHT = 492
 
-# Gap between avatar and bubble
-AVATAR_GAP = 12
+CARD_RADIUS = 20
 
-# Bubble
-BUBBLE_RADIUS = 22
-BUBBLE_PADDING_X = 18
-BUBBLE_PADDING_TOP = 12
-BUBBLE_PADDING_BOTTOM = 15
+CARD_PADDING_X = 18
+CARD_PADDING_TOP = 14
+CARD_PADDING_BOTTOM = 17
 
-# Text
-NAME_SIZE = 24
+NAME_SIZE = 23
 MESSAGE_SIZE = 27
 
-NAME_TO_MESSAGE_GAP = 4
 LINE_SPACING = 7
+NAME_MESSAGE_GAP = 5
 
 
-# ---------------------------------------------------------------------------
-# User colours
-# ---------------------------------------------------------------------------
-
-# Each Telegram user gets a stable accent colour.
-#
-# This is intentionally NOT the bot's colour.
-# user_id -> same colour every time.
+# ============================================================================
+# USER COLOURS
+# ============================================================================
 
 ACCENTS = [
-    (95, 155, 225),    # blue
-    (210, 115, 105),   # coral
-    (120, 180, 135),   # green
-    (205, 155, 70),    # gold
-    (175, 110, 205),   # purple
-    (90, 180, 190),    # cyan
-    (220, 125, 160),   # pink
+    (90, 155, 225),
+    (210, 115, 105),
+    (115, 180, 130),
+    (205, 155, 70),
+    (175, 110, 205),
+    (90, 180, 190),
+    (220, 125, 160),
 ]
 
 
@@ -130,41 +117,21 @@ def _accent_for(user_id: int):
     return ACCENTS[user_id % len(ACCENTS)]
 
 
-# ---------------------------------------------------------------------------
-# Font helpers
-# ---------------------------------------------------------------------------
+# ============================================================================
+# AVATAR
+# ============================================================================
 
-def _load_font(path: str, size: int):
-    return ImageFont.truetype(path, size)
-
-
-def _font_regular(size: int):
-    return _load_font(FONT_REG, size)
-
-
-def _font_bold(size: int):
-    return _load_font(FONT_BOLD, size)
-
-
-# ---------------------------------------------------------------------------
-# Avatar
-# ---------------------------------------------------------------------------
-
-def _fallback_avatar(user) -> Image.Image:
-    """
-    Generate a simple avatar when Telegram doesn't provide a profile photo.
-    """
-
+def _fallback_avatar(user):
     size = 200
     accent = _accent_for(user.id)
 
-    img = Image.new(
+    image = Image.new(
         "RGBA",
         (size, size),
         accent + (255,),
     )
 
-    draw = ImageDraw.Draw(img)
+    draw = ImageDraw.Draw(image)
 
     initial_source = (
         user.first_name
@@ -174,7 +141,10 @@ def _fallback_avatar(user) -> Image.Image:
 
     initial = initial_source[0].upper()
 
-    font = _font_bold(96)
+    font = _load_font(
+        FONT_BOLD,
+        96,
+    )
 
     bbox = draw.textbbox(
         (0, 0),
@@ -195,21 +165,13 @@ def _fallback_avatar(user) -> Image.Image:
         fill=(255, 255, 255, 255),
     )
 
-    return img
+    return image
 
 
-def _circle_avatar(
-    img: Image.Image,
-    size: int,
-) -> Image.Image:
-    """
-    Convert any avatar into a circular transparent image.
-    """
+def _circle_avatar(image, size):
+    image = image.convert("RGBA")
 
-    img = img.convert("RGBA")
-
-    # Center-crop instead of stretching the avatar.
-    width, height = img.size
+    width, height = image.size
 
     if width != height:
         side = min(width, height)
@@ -217,7 +179,7 @@ def _circle_avatar(
         left = (width - side) // 2
         top = (height - side) // 2
 
-        img = img.crop(
+        image = image.crop(
             (
                 left,
                 top,
@@ -226,7 +188,7 @@ def _circle_avatar(
             )
         )
 
-    img = img.resize(
+    image = image.resize(
         (size, size),
         Image.LANCZOS,
     )
@@ -249,7 +211,7 @@ def _circle_avatar(
     )
 
     output.paste(
-        img,
+        image,
         (0, 0),
         mask,
     )
@@ -257,101 +219,88 @@ def _circle_avatar(
     return output
 
 
-# ---------------------------------------------------------------------------
-# Thinking indicator
-# ---------------------------------------------------------------------------
+# ============================================================================
+# THINKING / COMMENT INDICATOR
+# ============================================================================
 
-def _draw_thinking_indicator(
-    canvas: Image.Image,
-    x: int,
-    y: int,
+def _draw_comment_indicator(
+    canvas,
+    avatar_x,
+    avatar_y,
 ):
     """
-    Draw a tiny three-dot thought bubble next to the avatar.
-
-    Since this is a static sticker, it cannot actually animate.
-    The dots visually imply that the quoted person is "thinking".
+    Small comment-style indicator attached visually to the avatar.
     """
 
     draw = ImageDraw.Draw(canvas)
 
-    # Small thought trail
-    draw.ellipse(
-        [
-            x + 1,
-            y + 28,
-            x + 8,
-            y + 35,
-        ],
-        fill=(75, 82, 100, 255),
-    )
+    x = avatar_x + 45
+    y = avatar_y + 48
 
-    draw.ellipse(
-        [
-            x + 7,
-            y + 20,
-            x + 17,
-            y + 30,
-        ],
-        fill=(75, 82, 100, 255),
-    )
-
-    # Main bubble
-    bubble_x = x + 13
-    bubble_y = y
-
-    bubble_w = 50
-    bubble_h = 31
-
+    # Outer little comment bubble
     draw.rounded_rectangle(
-        [
-            bubble_x,
-            bubble_y,
-            bubble_x + bubble_w,
-            bubble_y + bubble_h,
-        ],
-        radius=15,
-        fill=(35, 40, 52, 245),
-        outline=(75, 82, 100, 255),
-        width=1,
+        (
+            x,
+            y,
+            x + 42,
+            y + 27,
+        ),
+        radius=13,
+        fill=(45, 39, 63, 255),
+    )
+
+    # Tiny tail
+    draw.polygon(
+        (
+            (x + 8, y + 22),
+            (x + 4, y + 31),
+            (x + 16, y + 23),
+        ),
+        fill=(45, 39, 63, 255),
     )
 
     # Three dots
-    dot_y = bubble_y + bubble_h // 2
-
-    for index in range(3):
-        dot_x = bubble_x + 14 + index * 11
+    for i in range(3):
+        dot_x = x + 11 + i * 10
 
         draw.ellipse(
-            [
-                dot_x - 3,
-                dot_y - 3,
-                dot_x + 3,
-                dot_y + 3,
-            ],
-            fill=(155, 160, 180, 255),
+            (
+                dot_x - 2,
+                y + 11 - 2,
+                dot_x + 2,
+                y + 11 + 2,
+            ),
+            fill=(180, 174, 195, 255),
         )
 
 
-# ---------------------------------------------------------------------------
-# Text wrapping
-# ---------------------------------------------------------------------------
+# ============================================================================
+# TEXT HELPERS
+# ============================================================================
+
+def _text_width(draw, text, font):
+    return draw.textlength(
+        text,
+        font=font,
+    )
+
 
 def _wrap_text(
     draw,
-    text: str,
+    text,
     font,
-    max_width: int,
+    max_width,
 ):
     """
-    Wrap text while respecting words.
-
-    Also handles very long individual words by splitting them.
+    Wrap text while keeping words intact where possible.
     """
 
     lines = []
 
-    for paragraph in text.split("\n"):
+    paragraphs = text.split("\n")
+
+    for paragraph in paragraphs:
+
         paragraph = paragraph.strip()
 
         if not paragraph:
@@ -368,35 +317,41 @@ def _wrap_text(
                 else word
             )
 
-            if draw.textlength(
+            if _text_width(
+                draw,
                 candidate,
-                font=font,
+                font,
             ) <= max_width:
 
                 current = candidate
                 continue
 
-            # Current line is full.
             if current:
                 lines.append(current)
 
-            # Word itself is wider than the available space.
-            if draw.textlength(
+            # Extremely long word.
+            if _text_width(
+                draw,
                 word,
-                font=font,
+                font,
             ) > max_width:
 
                 chunk = ""
 
                 for char in word:
-                    test = chunk + char
 
-                    if draw.textlength(
-                        test,
-                        font=font,
+                    candidate_char = chunk + char
+
+                    if _text_width(
+                        draw,
+                        candidate_char,
+                        font,
                     ) <= max_width:
-                        chunk = test
+
+                        chunk = candidate_char
+
                     else:
+
                         if chunk:
                             lines.append(chunk)
 
@@ -413,58 +368,193 @@ def _wrap_text(
     return lines or ["…"]
 
 
-# ---------------------------------------------------------------------------
-# Render quote
-# ---------------------------------------------------------------------------
+# ============================================================================
+# EMOJI DETECTION
+# ============================================================================
+
+def _is_emoji_char(char):
+    """
+    Basic emoji range detection.
+
+    This isn't intended to classify every Unicode character perfectly.
+    It catches the emoji ranges most commonly used in Telegram messages.
+    """
+
+    code = ord(char)
+
+    return (
+        0x1F000 <= code <= 0x1FAFF
+        or 0x2600 <= code <= 0x27BF
+        or 0x2300 <= code <= 0x23FF
+        or 0x2B00 <= code <= 0x2BFF
+    )
+
+
+def _contains_emoji(text):
+    return any(
+        _is_emoji_char(char)
+        for char in text
+    )
+
+
+# ============================================================================
+# MIXED TEXT RENDERER
+# ============================================================================
+
+def _draw_mixed_text(
+    draw,
+    position,
+    text,
+    regular_font,
+    emoji_font,
+    fill,
+):
+    """
+    Draw normal Unicode text with Noto Sans and emoji using
+    Noto Color Emoji.
+
+    This prevents emoji from becoming empty squares.
+    """
+
+    x, y = position
+
+    if not emoji_font:
+        draw.text(
+            (x, y),
+            text,
+            font=regular_font,
+            fill=fill,
+        )
+        return
+
+    current = ""
+
+    def flush_text():
+        nonlocal current, x
+
+        if not current:
+            return
+
+        draw.text(
+            (x, y),
+            current,
+            font=regular_font,
+            fill=fill,
+        )
+
+        x += draw.textlength(
+            current,
+            font=regular_font,
+        )
+
+        current = ""
+
+    for char in text:
+
+        if _is_emoji_char(char):
+
+            flush_text()
+
+            try:
+                draw.text(
+                    (x, y - 2),
+                    char,
+                    font=emoji_font,
+                    embedded_color=True,
+                )
+
+                bbox = draw.textbbox(
+                    (x, y - 2),
+                    char,
+                    font=emoji_font,
+                )
+
+                emoji_width = bbox[2] - bbox[0]
+
+                if emoji_width <= 0:
+                    emoji_width = 30
+
+                x += emoji_width
+
+            except Exception:
+                # If Pillow cannot render a specific emoji,
+                # fall back gracefully rather than crashing.
+                fallback = "□"
+
+                draw.text(
+                    (x, y),
+                    fallback,
+                    font=regular_font,
+                    fill=fill,
+                )
+
+                x += draw.textlength(
+                    fallback,
+                    font=regular_font,
+                )
+
+        else:
+            current += char
+
+    flush_text()
+
+
+# ============================================================================
+# QUOTE RENDERER
+# ============================================================================
 
 def render_quote(
-    avatar_img: Image.Image,
-    name: str,
-    message: str,
-    user_id: int,
-) -> bytes:
-
+    avatar_img,
+    name,
+    message,
+    user_id,
+):
     accent = _accent_for(user_id)
 
-    name_font = _font_bold(NAME_SIZE)
-    message_font = _font_regular(MESSAGE_SIZE)
+    name_font = _load_font(
+        FONT_BOLD,
+        NAME_SIZE,
+    )
 
-    # Temporary drawing surface used for measuring text.
-    measure = Image.new(
+    message_font = _load_font(
+        FONT_REGULAR,
+        MESSAGE_SIZE,
+    )
+
+    emoji_font = None
+
+    if FONT_EMOJI:
+        try:
+            emoji_font = ImageFont.truetype(
+                FONT_EMOJI,
+                MESSAGE_SIZE,
+            )
+        except Exception:
+            emoji_font = None
+
+    # Temporary measurement surface.
+    temp = Image.new(
         "RGBA",
         (10, 10),
     )
 
-    measure_draw = ImageDraw.Draw(measure)
+    measure = ImageDraw.Draw(temp)
 
-    # The bubble occupies the right side.
-    bubble_x = (
-        LEFT_MARGIN
-        + AVATAR_SIZE
-        + AVATAR_GAP
-    )
-
-    bubble_max_width = (
-        CANVAS_W
-        - bubble_x
-        - RIGHT_MARGIN
-    )
-
+    # Text area inside the comment card.
     text_width = (
-        bubble_max_width
-        - BUBBLE_PADDING_X * 2
+        CARD_RIGHT
+        - CARD_X
+        - CARD_PADDING_X * 2
     )
 
-    # Wrap message.
     lines = _wrap_text(
-        measure_draw,
+        measure,
         message.strip() or "…",
         message_font,
         text_width,
     )
 
-    # Name dimensions.
-    name_bbox = measure_draw.textbbox(
+    name_bbox = measure.textbbox(
         (0, 0),
         name[:32],
         font=name_font,
@@ -475,14 +565,13 @@ def render_quote(
         - name_bbox[1]
     )
 
-    # Message line height.
-    msg_bbox = measure_draw.textbbox(
+    msg_bbox = measure.textbbox(
         (0, 0),
         "Ag",
         font=message_font,
     )
 
-    message_line_height = (
+    line_height = (
         msg_bbox[3]
         - msg_bbox[1]
         + LINE_SPACING
@@ -490,78 +579,45 @@ def render_quote(
 
     message_height = (
         len(lines)
-        * message_line_height
+        * line_height
     )
 
-    bubble_height = (
-        BUBBLE_PADDING_TOP
+    card_height = (
+        CARD_PADDING_TOP
         + name_height
-        + NAME_TO_MESSAGE_GAP
+        + NAME_MESSAGE_GAP
         + message_height
-        + BUBBLE_PADDING_BOTTOM
+        + CARD_PADDING_BOTTOM
     )
 
-    # Minimum height so very short quotes still look good.
-    bubble_height = max(
-        bubble_height,
+    card_height = max(
+        card_height,
         AVATAR_SIZE,
     )
 
-    # Maximum sticker height.
-    bubble_height = min(
-        bubble_height,
+    card_height = min(
+        card_height,
         760,
     )
 
-    canvas_h = max(
-        bubble_height + TOP_MARGIN + BOTTOM_MARGIN,
-        AVATAR_SIZE + TOP_MARGIN + BOTTOM_MARGIN,
+    canvas_height = (
+        max(
+            card_height,
+            AVATAR_SIZE,
+        )
+        + 48
     )
 
     canvas = Image.new(
         "RGBA",
         (
-            CANVAS_W,
-            canvas_h,
+            CANVAS_WIDTH,
+            canvas_height,
         ),
-        (0, 0, 0, 0),
+        BACKGROUND,
     )
 
     draw = ImageDraw.Draw(canvas)
-
-    # ------------------------------------------------------------------
-    # Bubble
-    # ------------------------------------------------------------------
-
-    bubble_y = TOP_MARGIN
-
-    # This is deliberately neutral/dark.
-    # The name provides the user's colour.
-    bubble_color = (24, 29, 39, 255)
-
-    draw.rounded_rectangle(
-        [
-            bubble_x,
-            bubble_y,
-            CANVAS_W - RIGHT_MARGIN,
-            bubble_y + bubble_height,
-        ],
-        radius=BUBBLE_RADIUS,
-        fill=bubble_color,
-    )
-
-    # Tiny Telegram-style bottom-left tail.
-    tail_x = bubble_x + 1
-    tail_y = bubble_y + bubble_height - 18
-
-    draw.polygon(
-        [
-            (tail_x, tail_y),
-            (tail_x - 10, tail_y + 14),
-            (tail_x + 14, tail_y + 7),
-        ],
-        fill=bubble_color,
-    )
 
     # ------------------------------------------------------------------
     # Avatar
@@ -572,55 +628,61 @@ def render_quote(
         AVATAR_SIZE,
     )
 
-    avatar_x = LEFT_MARGIN
-    avatar_y = TOP_MARGIN + 2
-
     canvas.paste(
         avatar,
         (
-            avatar_x,
-            avatar_y,
+            AVATAR_X,
+            AVATAR_Y,
         ),
         avatar,
     )
 
-    # User-specific avatar ring.
+    # User's accent ring.
     draw.ellipse(
-        [
-            avatar_x,
-            avatar_y,
-            avatar_x + AVATAR_SIZE - 1,
-            avatar_y + AVATAR_SIZE - 1,
-        ],
-        outline=accent,
+        (
+            AVATAR_X,
+            AVATAR_Y,
+            AVATAR_X + AVATAR_SIZE - 1,
+            AVATAR_Y + AVATAR_SIZE - 1,
+        ),
+        outline=accent + (255,),
         width=2,
     )
 
-    # Thinking indicator.
-    #
-    # Positioned above/right of the avatar so it looks detached
-    # from the actual message bubble.
-    indicator_x = avatar_x + 30
-    indicator_y = avatar_y - 4
-
-    _draw_thinking_indicator(
+    # Comment/thinking indicator.
+    _draw_comment_indicator(
         canvas,
-        indicator_x,
-        indicator_y,
+        AVATAR_X,
+        AVATAR_Y,
     )
 
     # ------------------------------------------------------------------
-    # Name
+    # Comment card
+    # ------------------------------------------------------------------
+
+    draw.rounded_rectangle(
+        (
+            CARD_X,
+            CARD_Y,
+            CARD_RIGHT,
+            CARD_Y + card_height,
+        ),
+        radius=CARD_RADIUS,
+        fill=CARD_BACKGROUND,
+    )
+
+    # ------------------------------------------------------------------
+    # Username
     # ------------------------------------------------------------------
 
     text_x = (
-        bubble_x
-        + BUBBLE_PADDING_X
+        CARD_X
+        + CARD_PADDING_X
     )
 
     name_y = (
-        bubble_y
-        + BUBBLE_PADDING_TOP
+        CARD_Y
+        + CARD_PADDING_TOP
     )
 
     draw.text(
@@ -640,25 +702,27 @@ def render_quote(
     message_y = (
         name_y
         + name_height
-        + NAME_TO_MESSAGE_GAP
+        + NAME_MESSAGE_GAP
     )
 
     for line in lines:
 
-        draw.text(
+        _draw_mixed_text(
+            draw,
             (
                 text_x,
                 message_y,
             ),
             line,
-            font=message_font,
-            fill=(235, 238, 244, 255),
+            message_font,
+            emoji_font,
+            TEXT_COLOR,
         )
 
-        message_y += message_line_height
+        message_y += line_height
 
     # ------------------------------------------------------------------
-    # Telegram sticker size
+    # Resize to Telegram sticker dimensions
     # ------------------------------------------------------------------
 
     width, height = canvas.size
@@ -672,7 +736,7 @@ def render_quote(
             round(
                 height
                 * 512
-                / width
+                / width,
             ),
         )
 
@@ -685,7 +749,7 @@ def render_quote(
             round(
                 width
                 * 512
-                / height
+                / height,
             ),
         )
 
@@ -698,7 +762,7 @@ def render_quote(
     )
 
     # ------------------------------------------------------------------
-    # WEBP output
+    # WEBP
     # ------------------------------------------------------------------
 
     buffer = io.BytesIO()
@@ -713,9 +777,9 @@ def render_quote(
     return buffer.getvalue()
 
 
-# ---------------------------------------------------------------------------
-# /q command
-# ---------------------------------------------------------------------------
+# ============================================================================
+# /q
+# ============================================================================
 
 @Client.on_message(
     filters.command("q")
@@ -755,7 +819,7 @@ async def quote_cmd(
     )
 
     # ------------------------------------------------------------------
-    # Download avatar
+    # Avatar
     # ------------------------------------------------------------------
 
     avatar_img = None
@@ -780,13 +844,14 @@ async def quote_cmd(
 
                 if avatar_path:
 
-                    loaded = Image.open(
-                        avatar_path
-                    ).convert("RGBA")
+                    avatar_img = (
+                        Image.open(
+                            avatar_path
+                        )
+                        .convert("RGBA")
+                    )
 
-                    loaded.load()
-
-                    avatar_img = loaded
+                    avatar_img.load()
 
     except Exception:
         avatar_img = None
@@ -795,7 +860,7 @@ async def quote_cmd(
         avatar_img = _fallback_avatar(user)
 
     # ------------------------------------------------------------------
-    # Message text
+    # Message
     # ------------------------------------------------------------------
 
     text = (
@@ -805,15 +870,6 @@ async def quote_cmd(
     )
 
     text = text[:MAX_QUOTE_CHARS]
-
-    # Use the actual display name.
-    #
-    # Telegram may provide Unicode-styled names such as:
-    # 𝘚𝘢𝘯𝘫𝘪
-    # 𝗦𝗮𝗻𝗷𝗶
-    # 𝑺𝒂𝒏𝒋𝒊
-    #
-    # Noto Sans handles these much better than DejaVu Sans.
 
     name = (
         user.first_name
@@ -838,14 +894,14 @@ async def quote_cmd(
     except Exception as exc:
 
         await status.edit_text(
-            "Couldn't render that one. "
-            f"(`{exc}`)"
+            "Couldn't render that one.\n"
+            f"`{exc}`"
         )
 
         return
 
     # ------------------------------------------------------------------
-    # Send sticker
+    # Send
     # ------------------------------------------------------------------
 
     webp_path = None
@@ -877,9 +933,11 @@ async def quote_cmd(
 
     finally:
 
-        if webp_path and os.path.exists(
+        if (
             webp_path
+            and os.path.exists(webp_path)
         ):
+
             try:
                 os.unlink(webp_path)
             except OSError:
